@@ -2,7 +2,22 @@ import re
 import calendar
 from datetime import datetime
 
+# --------------------------------------
+# Improved error and warning logging
+# --------------------------------------
+
+import logging
+
+logging.basicConfig(
+    filename='insightlog.log',
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+
+# --------------------------------------
 # Service settings
+# --------------------------------------
+
 DEFAULT_NGINX = {
     'type': 'web0',
     'dir_path': '/var/log/nginx/',
@@ -64,77 +79,70 @@ AUTH_USER_INVALID_USER = r'(?i)invalid\suser\s(\w+)\s'
 AUTH_PASS_INVALID_USER = r'(?i)failed\spassword\sfor\s(\w+)\s'
 
 
-# Validator functions
+# --------------------------------------
+# Validators
+# --------------------------------------
+
 def is_valid_year(year):
-    """Check if year's value is valid"""
     return 2030 >= year > 1970
 
-
 def is_valid_month(month):
-    """Check if month's value is valid"""
     return 12 >= month > 0
 
-
 def is_valid_day(day):
-    """Check if day value is valid"""
     return 31 >= day > 0
 
-
 def is_valid_hour(hour):
-    """Check if hour value is valid"""
     return (hour == '*') or (23 >= hour >= 0)
 
-
 def is_valid_minute(minute):
-    """Check if minute value is valid"""
     return (minute == '*') or (59 >= minute >= 0)
 
 
+# --------------------------------------
 # Utility functions
+# --------------------------------------
+
 def get_service_settings(service_name):
-    """Get default settings for the said service"""
     if service_name in SERVICES_SWITCHER:
         return SERVICES_SWITCHER.get(service_name)
     else:
-        raise Exception("Service \""+service_name+"\" doesn't exists!")
+        raise Exception(f"Service '{service_name}' doesn't exist!")
 
 
 def get_date_filter(settings, minute=datetime.now().minute, hour=datetime.now().hour,
                     day=datetime.now().day, month=datetime.now().month,
                     year=datetime.now().year):
-    """Get the date pattern that can be used to filter data from logs based on the params"""
+
     if not is_valid_year(year) or not is_valid_month(month) or not is_valid_day(day) \
             or not is_valid_hour(hour) or not is_valid_minute(minute):
         raise Exception("Date elements aren't valid")
+
     if minute != '*' and hour != '*':
-        date_format = settings['dateminutes_format']
-        date_filter = datetime(year, month, day, hour, minute).strftime(date_format)
-    elif minute == '*' and hour != '*':
-        date_format = settings['datehours_format']
-        date_filter = datetime(year, month, day, hour).strftime(date_format)
-    elif minute == '*' and hour == '*':
-        date_format = settings['datedays_format']
-        date_filter = datetime(year, month, day).strftime(date_format)
-    else:
-        raise Exception("Date elements aren't valid")
-    return date_filter
+        return datetime(year, month, day, hour, minute).strftime(settings['dateminutes_format'])
+
+    if minute == '*' and hour != '*':
+        return datetime(year, month, day, hour).strftime(settings['datehours_format'])
+
+    if minute == '*' and hour == '*':
+        return datetime(year, month, day).strftime(settings['datedays_format'])
+
+    raise Exception("Date elements aren't valid")
 
 
 def check_match(line, filter_pattern, is_regex=False, is_casesensitive=True, is_reverse=False):
-    """Check if line contains/matches filter pattern"""
     if is_regex:
         check_result = re.match(filter_pattern, line) if is_casesensitive \
             else re.match(filter_pattern, line, re.IGNORECASE)
     else:
         check_result = (filter_pattern in line) if is_casesensitive else (filter_pattern.lower() in line.lower())
-    if is_reverse:
-        return not check_result
-    return check_result
+
+    return not check_result if is_reverse else check_result
 
 
 def filter_data(log_filter, data=None, filepath=None, is_casesensitive=True, is_regex=False, is_reverse=False):
-    """Filter received data/file content and return the results"""
     return_data = ""
+
     if filepath:
         try:
             with open(filepath, 'r') as file_object:
@@ -143,129 +151,176 @@ def filter_data(log_filter, data=None, filepath=None, is_casesensitive=True, is_
                         return_data += line
             return return_data
         except (IOError, EnvironmentError) as e:
-            print(e.strerror)
+            logging.error(f"Could not open file '{filepath}': {e}")
             return None
-    elif data:
+
+    if data:
         for line in data.splitlines():
             if check_match(line, log_filter, is_regex, is_casesensitive, is_reverse):
-                return_data += line+"\n"
+                return_data += line + "\n"
         return return_data
-    else:
-        raise Exception("Data and filepath values are NULL!")
 
+    raise Exception("Data and filepath values are NULL!")
+
+
+# --------------------------------------
+# ORIGINAL _get_auth_year() (Option B)
+# --------------------------------------
+
+def _get_auth_year():
+    """Return the year when the requests happened (simple version)."""
+    if datetime.now().month == 1 and datetime.now().day == 1 and datetime.now().hour == 0:
+        return datetime.now().year - 1
+    return datetime.now().year
+
+
+# --------------------------------------
+# Date parsing
+# --------------------------------------
 
 def _get_iso_datetime(str_date, pattern, keys):
-    """Change raw datetime from logs to ISO 8601 format."""
     months_dict = {v: k for k, v in enumerate(calendar.month_abbr)}
     matches = re.findall(pattern, str_date)
+
     if not matches:
+        logging.warning(f"Malformed date skipped: '{str_date}' did not match pattern '{pattern}'")
         raise ValueError(f"Date pattern '{pattern}' did not match '{str_date}'")
+
     a_date = matches[0]
-    d_datetime = datetime(int(a_date[keys['year']]) if 'year' in keys else _get_auth_year(),
-                          months_dict[a_date[keys['month']]], int(a_date[keys['day']].strip()),
-                          int(a_date[keys['hour']]), int(a_date[keys['minute']]), int(a_date[keys['second']]))
+
+    if 'year' in keys:
+        year = int(a_date[keys['year']])
+    else:
+        year = _get_auth_year()
+
+    d_datetime = datetime(
+        year,
+        months_dict[a_date[keys['month']]],
+        int(a_date[keys['day']].strip()),
+        int(a_date[keys['hour']]),
+        int(a_date[keys['minute']]),
+        int(a_date[keys['second']])
+    )
+
     return d_datetime.isoformat(' ')
 
 
-def _get_auth_year():
-    """Return the year when the requests happened"""
-    if datetime.now().month == 1 and datetime.now().day == 1 and datetime.now().hour == 0:
-        return datetime.now().year - 1
-    else:
-        return datetime.now().year
-
+# --------------------------------------
+# Request parsing
+# --------------------------------------
 
 def get_web_requests(data, pattern, date_pattern=None, date_keys=None):
-    """Analyze data (from the logs) and return list of requests formatted as the model (pattern) defined."""
     if date_pattern and not date_keys:
         raise Exception("date_keys is not defined")
+
     requests_dict = re.findall(pattern, data, flags=re.IGNORECASE)
     requests = []
+
     for request_tuple in requests_dict:
-        if date_pattern:
-            str_datetime = _get_iso_datetime(request_tuple[1], date_pattern, date_keys)
-        else:
-            str_datetime = request_tuple[1]
-        requests.append({'DATETIME': str_datetime, 'IP': request_tuple[0],
-                         'METHOD': request_tuple[2], 'ROUTE': request_tuple[3], 'CODE': request_tuple[4],
-                         'REFERRER': request_tuple[5], 'USERAGENT': request_tuple[6]})
+        try:
+            if date_pattern:
+                str_datetime = _get_iso_datetime(request_tuple[1], date_pattern, date_keys)
+            else:
+                str_datetime = request_tuple[1]
+        except Exception as e:
+            logging.warning(f"Skipping malformed web request: {request_tuple} ({e})")
+            continue
+
+        requests.append({
+            'DATETIME': str_datetime,
+            'IP': request_tuple[0],
+            'METHOD': request_tuple[2],
+            'ROUTE': request_tuple[3],
+            'CODE': request_tuple[4],
+            'REFERRER': request_tuple[5],
+            'USERAGENT': request_tuple[6]
+        })
+
     return requests
 
 
 def get_auth_requests(data, pattern, date_pattern=None, date_keys=None):
-    """Analyze data (from the logs) and return list of auth requests formatted as the model (pattern) defined."""
     requests_dict = re.findall(pattern, data)
     requests = []
+
     for request_tuple in requests_dict:
-        if date_pattern:
-            str_datetime = _get_iso_datetime(request_tuple[0], date_pattern, date_keys)
-        else:
-            str_datetime = request_tuple[0]
-        data = analyze_auth_request(request_tuple[2])
-        data['DATETIME'] = str_datetime
-        data['SERVICE'] = request_tuple[1]
-        requests.append(data)
+        try:
+            if date_pattern:
+                str_datetime = _get_iso_datetime(request_tuple[0], date_pattern, date_keys)
+            else:
+                str_datetime = request_tuple[0]
+        except Exception as e:
+            logging.warning(f"Skipping malformed auth request: {request_tuple} ({e})")
+            continue
+
+        parsed = analyze_auth_request(request_tuple[2])
+        parsed['DATETIME'] = str_datetime
+        parsed['SERVICE'] = request_tuple[1]
+        requests.append(parsed)
+
     return requests
 
 
 def analyze_auth_request(request_info):
-    """Analyze request info and returns main data (IP, invalid user, invalid password's user, is_preauth, is_closed)"""
     ipv4 = re.findall(IPv4_REGEX, request_info)
     is_preauth = '[preauth]' in request_info.lower()
     invalid_user = re.findall(AUTH_USER_INVALID_USER, request_info)
     invalid_pass_user = re.findall(AUTH_PASS_INVALID_USER, request_info)
     is_closed = 'connection closed by ' in request_info.lower()
-    return {'IP': ipv4[0] if ipv4 else None,
-            'INVALID_USER': invalid_user[0] if invalid_user else None,
-            'INVALID_PASS_USER': invalid_pass_user[0] if invalid_pass_user else None,
-            'IS_PREAUTH': is_preauth,
-            'IS_CLOSED': is_closed}
+
+    return {
+        'IP': ipv4[0] if ipv4 else None,
+        'INVALID_USER': invalid_user[0] if invalid_user else None,
+        'INVALID_PASS_USER': invalid_pass_user[0] if invalid_pass_user else None,
+        'IS_PREAUTH': is_preauth,
+        'IS_CLOSED': is_closed
+    }
 
 
-# Simplified analyzer functions (replacing the class)
+# --------------------------------------
+# Filtering
+# --------------------------------------
+
 def apply_filters(filters, data=None, filepath=None):
-    """Apply all filters to data or file and return filtered results"""
     if filepath:
         try:
             with open(filepath, 'r') as file_object:
-                filtered_lines = []
-                for line in file_object:
-                    if check_all_matches(line, filters):
-                        filtered_lines.append(line)
+                filtered_lines = [
+                    line for line in file_object
+                    if check_all_matches(line, filters)
+                ]
                 return ''.join(filtered_lines)
         except (IOError, EnvironmentError) as e:
-            print(e.strerror)
+            logging.error(f"Could not open file '{filepath}': {e}")
             return None
-    elif data:
-        filtered_lines = []
-        for line in data.splitlines():
-            if check_all_matches(line, filters):
-                filtered_lines.append(line + "\n")
+
+    if data:
+        filtered_lines = [
+            line + "\n" for line in data.splitlines()
+            if check_all_matches(line, filters)
+        ]
         return ''.join(filtered_lines)
-    else:
-        raise Exception("Either data or filepath must be provided")
+
+    raise Exception("Either data or filepath must be provided")
 
 
 def check_all_matches(line, filter_patterns):
-    """Check if line contains/matches all filter patterns"""
     if not filter_patterns:
         return True
-    result = True
-    for pattern_data in filter_patterns:
-        tmp_result = check_match(line=line, **pattern_data)
-        result = result and tmp_result
-    return result
 
+    return all(check_match(line=line, **pattern_data) for pattern_data in filter_patterns)
+
+
+# --------------------------------------
+# Main request dispatcher
+# --------------------------------------
 
 def get_requests(service, data=None, filepath=None, filters=None):
-    """Analyze data and return list of requests. Main function to get parsed requests."""
     settings = get_service_settings(service)
-    
-    # Determine filepath if not provided
+
     if not filepath and not data:
         filepath = settings['dir_path'] + settings['accesslog_filename']
-    
-    # Apply filters if provided
+
     if filters:
         filtered_data = apply_filters(filters, data=data, filepath=filepath)
     else:
@@ -274,31 +329,34 @@ def get_requests(service, data=None, filepath=None, filters=None):
                 with open(filepath, 'r') as f:
                     filtered_data = f.read()
             except (IOError, EnvironmentError) as e:
-                print(e.strerror)
+                logging.error(f"Could not open file '{filepath}': {e}")
                 return None
         else:
             filtered_data = data
-    
+
     if not filtered_data:
         return []
-    
-    # Parse requests based on service type
+
     request_pattern = settings['request_model']
     date_pattern = settings['date_pattern']
     date_keys = settings['date_keys']
-    
+
     if settings['type'] == 'web0':
         return get_web_requests(filtered_data, request_pattern, date_pattern, date_keys)
-    elif settings['type'] == 'auth':
+
+    if settings['type'] == 'auth':
         return get_auth_requests(filtered_data, request_pattern, date_pattern, date_keys)
-    else:
-        return None
+
+    return None
 
 
+# --------------------------------------
 # CLI entry point
+# --------------------------------------
+
 if __name__ == '__main__':
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Analyze server log files (nginx, apache2, auth)")
     parser.add_argument('--service', required=True, choices=['nginx', 'apache2', 'auth'], help='Type of log to analyze')
     parser.add_argument('--logfile', required=True, help='Path to the log file')
@@ -307,10 +365,14 @@ if __name__ == '__main__':
 
     filters = []
     if args.filter:
-        filters.append({'filter_pattern': args.filter, 'is_casesensitive': True, 'is_regex': False, 'is_reverse': False})
-    
+        filters.append({
+            'filter_pattern': args.filter,
+            'is_casesensitive': True,
+            'is_regex': False,
+            'is_reverse': False
+        })
+
     requests = get_requests(args.service, filepath=args.logfile, filters=filters)
     if requests:
         for req in requests:
             print(req)
-
