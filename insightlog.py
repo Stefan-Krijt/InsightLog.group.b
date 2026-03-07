@@ -258,47 +258,50 @@ def _get_iso_datetime(str_date, pattern, keys):
     return d_datetime.isoformat(' ')
 
 
-def get_web_requests(data, pattern, date_pattern=None, date_keys=None):
+# refactored function
+def get_web_request(data, pattern, date_pattern=None, date_keys=None):
     """Analyze data (from the logs) and return list of requests formatted as the model (pattern) defined."""
     if date_pattern and not date_keys:
         raise Exception("date_keys is not defined")
-    requests_dict = re.findall(pattern, data, flags=re.IGNORECASE)
-    requests = []
-    for request_tuple in requests_dict:
-        try:
-            if date_pattern:
-                str_datetime = _get_iso_datetime(request_tuple[1], date_pattern, date_keys)
-            else:
-                str_datetime = request_tuple[1]
-        except Exception as e:
-            logging.warning(f"Skipping malformed web request: {request_tuple} ({e})") ### for error and warning logging ###
-            continue
 
-        requests.append({'DATETIME': str_datetime, 'IP': request_tuple[0],
-                         'METHOD': request_tuple[2], 'ROUTE': request_tuple[3], 'CODE': request_tuple[4],
-                         'REFERRER': request_tuple[5], 'USERAGENT': request_tuple[6]})
-    return requests
+    request_match = re.match(pattern, data, flags=re.IGNORECASE)
 
+    if not request_match:
+        return None
 
-def get_auth_requests(data, pattern, date_pattern=None, date_keys=None):
+    if date_pattern:
+        str_datetime = _get_iso_datetime(request_match.group(2), date_pattern, date_keys)
+    else:
+        str_datetime = request_match.group(2)
+
+    result={
+        'DATETIME': str_datetime,
+        'IP': request_match.group(1),
+        'METHOD': request_match.group(3),
+        'ROUTE': request_match.group(4),
+        'CODE': request_match.group(5),
+        'REFERRER': request_match.group(6),
+        'USERAGENT': request_match.group(7)
+    }
+    return result
+
+# refactored function
+def get_auth_request(data, pattern, date_pattern=None, date_keys=None):
     """Analyze data (from the logs) and return list of auth requests formatted as the model (pattern) defined."""
-    requests_dict = re.findall(pattern, data)
-    requests = []
-    for request_tuple in requests_dict:
-        try:
-            if date_pattern:
-                str_datetime = _get_iso_datetime(request_tuple[0], date_pattern, date_keys)
-            else:
-                str_datetime = request_tuple[0]
-        except Exception as e:
-            logging.warning(f"Skipping malformed auth request: {request_tuple} ({e})") ### for error and warning logging ###
-            continue
+    request_match = re.match(pattern, data)
 
-        data = analyze_auth_request(request_tuple[2])
-        data['DATETIME'] = str_datetime
-        data['SERVICE'] = request_tuple[1]
-        requests.append(data)
-    return requests
+    if not request_match:
+        return None
+
+    if date_pattern:
+        str_datetime = _get_iso_datetime(request_match.group(1), date_pattern, date_keys)
+    else:
+        str_datetime = request_match.group(1)
+
+    data = analyze_auth_request(request_match.group(3))
+    data['DATETIME'] = str_datetime
+    data['SERVICE'] = request_match.group(2)
+    return data
 
 
 def analyze_auth_request(request_info):
@@ -350,42 +353,106 @@ def check_all_matches(line, filter_patterns):
     return result
 
 
+def progress_bar(total, current, last_percent):
+    if total <= 0:
+        logging.error(f"cannot divide through {total}")
+        raise ValueError("Dividing error in progress-bar")
+    percent = (current / total) * 100
+    percent_int = int(percent)
+
+    bar_width = 30
+    filled = int((percent_int / 100) * bar_width)
+    bar = "#" * filled + "-" * (bar_width - filled)
+
+    if percent_int > last_percent:
+        print(f"[{bar}] {percent_int}%", end="\r", flush=True)
+        last_percent = percent_int
+
+    return last_percent
+
+
+# refactored function
 def get_requests(service, data=None, filepath=None, filters=None):
     """Analyze data and return list of requests. Main function to get parsed requests."""
     settings = get_service_settings(service)
 
-    # Determine filepath if not provided
-    if not filepath and not data:
-        filepath = settings['dir_path'] + settings['accesslog_filename']
-
-    # Apply filters if provided
-    if filters:
-        filtered_data = apply_filters(filters, data=data, filepath=filepath)
-    else:
-        if filepath:
-            try:
-                with open(filepath, 'r') as f:
-                    filtered_data = f.read()
-            except (IOError, EnvironmentError) as e:
-                logging.error(f"Could not open file '{filepath}': {e}") ### for error and warning logging ###
-                return None
-        else:
-            filtered_data = data
-
-    if not filtered_data:
-        return []
-
-    # Parse requests based on service type
     request_pattern = settings['request_model']
     date_pattern = settings['date_pattern']
     date_keys = settings['date_keys']
 
+    requests = []
+    last_percent = -1
+
+    # Choose parser based on type
     if settings['type'] == 'web0':
-        return get_web_requests(filtered_data, request_pattern, date_pattern, date_keys)
+        parser = get_web_request
     elif settings['type'] == 'auth':
-        return get_auth_requests(filtered_data, request_pattern, date_pattern, date_keys)
+        parser = get_auth_request
     else:
         return None
+
+    if not filepath and data is None:
+        filepath = settings['dir_path'] + settings['accesslog_filename']
+
+    if filepath:
+        filesize = os.path.getsize(filepath)
+        try:
+            with open(filepath, 'r') as file:
+                line_number = 0
+                line = file.readline()
+
+                while line:
+                    line_number += 1
+                    current_bytes = file.tell()
+                    last_percent = progress_bar(filesize, current_bytes, last_percent)
+
+                    try:
+                        if filters and not check_all_matches(line, filters):
+                            line = file.readline()
+                            continue
+
+                        entry = parser(line, request_pattern, date_pattern, date_keys)
+                        if entry:
+                            requests.append(entry)
+
+                    except Exception as e:
+                        logging.warning(
+                            f"{settings['type']} parse error at line {line_number}: {line.strip()} ({e})"
+                        )
+
+                    line = file.readline()
+                print() # Necessary for displaying the progress bar. Without it, it will be overwritten.
+
+        except (IOError, EnvironmentError) as e:
+            logging.error(f"Could not open file '{filepath}': {e}")
+            print(e)
+            return None
+
+    elif data is not None:
+        data_lines = data.splitlines()
+        data_length = len(data_lines)
+
+        for line_number, line in enumerate(data_lines, start=1):
+            last_percent = progress_bar(data_length, line_number, last_percent)
+            try:
+                if filters and not check_all_matches(line, filters):
+                    continue
+                entry = parser(line, request_pattern, date_pattern, date_keys)
+                if entry:
+                    requests.append(entry)
+            except Exception as e:
+                logging.warning(
+                    f"{settings['type']} parse error at line {line_number}: {line.strip()} ({e})"
+                )
+        print() # Necessary for displaying the progress bar. Without it, it will be overwritten.
+
+    else:
+        logging.error(f"No filepath and empty data")
+
+    return requests
+
+
+
 
 
 def export_results(requests, output_path="output"):
