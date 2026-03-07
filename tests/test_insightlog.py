@@ -7,25 +7,47 @@ from insightlog import *
 class TestInsightLog(TestCase):
 
     def test_get_date_filter(self):
+        now = datetime.now()
         nginx_settings = get_service_settings('nginx')
+        # positive cases
         self.assertEqual(get_date_filter(nginx_settings, 13, 13, 16, 1, 1989),
                          '[16/Jan/1989:13:13', "get_date_filter#1")
         self.assertEqual(get_date_filter(nginx_settings, '*', '*', 16, 1, 1989),
                          '[16/Jan/1989', "get_date_filter#2")
-        self.assertEqual(get_date_filter(nginx_settings, '*'), datetime.now().strftime("[%d/%b/%Y:%H"),
+        self.assertEqual(get_date_filter(nginx_settings, '*'), now.strftime("[%d/%b/%Y:%H"),
                          "get_date_filter#3")
         apache2_settings = get_service_settings('apache2')
         self.assertEqual(get_date_filter(apache2_settings, 13, 13, 16, 1, 1989),
                          '[16/Jan/1989:13:13', "get_date_filter#4")
         self.assertEqual(get_date_filter(apache2_settings, '*', '*', 16, 1, 1989),
                          '[16/Jan/1989', "get_date_filter#5")
-        self.assertEqual(get_date_filter(apache2_settings, '*'), datetime.now().strftime("[%d/%b/%Y:%H"),
+        self.assertEqual(get_date_filter(apache2_settings, '*'), now.strftime("[%d/%b/%Y:%H"),
                          "get_date_filter#6")
         auth_settings = get_service_settings('auth')
         self.assertEqual(get_date_filter(auth_settings, 13, 13, 16, 1),
                          'Jan 16 13:13:', "get_date_filter#7")
         self.assertEqual(get_date_filter(auth_settings, '*', '*', 16, 1),
                          'Jan 16 ', "get_date_filter#8")
+        # negative cases
+        with self.assertRaises(TypeError):
+            get_date_filter(nginx_settings, 'cat', 2, 31, 1, 2024)  # invalid minute
+        with self.assertRaises(TypeError):
+            get_date_filter(nginx_settings, 42, 2, 31, 1, 'dog')  # invalid year
+
+        with self.assertRaises(ValueError):
+            get_date_filter(nginx_settings, 42, 2, 31, 2, 2024)  # invalid day - 31. februar
+
+        with self.assertRaises(ValueError):
+            get_date_filter(nginx_settings, 42, 2, 0, 2, 2024)  # invalid day 0
+
+        with self.assertRaises(ValueError):
+            get_date_filter(nginx_settings, 42, 2, 7, 13, 2024)  # invalid month 13
+
+        with self.assertRaises(ValueError):
+            get_date_filter(nginx_settings, 60, 13, 7, 1, 1989) # invalid minute
+
+        with self.assertRaises(ValueError):
+            get_date_filter(nginx_settings, 0, 24, 16, 1, 1989)  # invalid hour
 
     def test_filter_data(self):
         nginx_settings = get_service_settings('nginx')
@@ -92,7 +114,7 @@ class TestInsightLog(TestCase):
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         auth_logfile = os.path.join(base_dir, 'logs-samples/auth.sample')
         nginx_logfile = os.path.join(base_dir, 'logs-samples/nginx1.sample')
-        
+
         # Test auth logs with filters
         auth_settings = get_service_settings('auth')
         date_filter = get_date_filter(auth_settings, minute='*', hour=22, day=4, month=5)
@@ -102,7 +124,7 @@ class TestInsightLog(TestCase):
         ]
         requests = get_requests('auth', filepath=auth_logfile, filters=auth_filters)
         self.assertEqual(len(requests), 18, "get_requests#1")
-        
+
         # Test nginx logs with filter
         nginx_filters = [
             {'filter_pattern': '192.10.1.1', 'is_casesensitive': True, 'is_regex': False, 'is_reverse': False}
