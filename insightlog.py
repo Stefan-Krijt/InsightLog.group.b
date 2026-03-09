@@ -178,22 +178,22 @@ def check_match(line, filter_pattern, is_regex=False, is_casesensitive=True, is_
 
 
 def filter_data(log_filter, data=None, filepath=None, is_casesensitive=True, is_regex=False, is_reverse=False):
-    """Filter received data/file content and return the results"""
-    return_data = ""
+    return_data = []
     if filepath:
         try:
             with open(filepath, 'r') as file_object:
                 for line in file_object:
                     if check_match(line, log_filter, is_regex, is_casesensitive, is_reverse):
-                        return_data += line
+                        return_data.append(line)
             return return_data
         except (IOError, EnvironmentError) as e:
-            logging.error(f"Could not open file '{filepath}': {e}") ### for error and warning logging ###
+            logging.error(f"Could not open file '{filepath}': {e}")
             return None
-    elif data:
-        for line in data.splitlines():
+    elif data is not None:
+        lines = data if isinstance(data, list) else data.splitlines()
+        for line in lines:
             if check_match(line, log_filter, is_regex, is_casesensitive, is_reverse):
-                return_data += line+"\n"
+                return_data.append(line)
         return return_data
     else:
         raise Exception("Data and filepath values are NULL!")
@@ -429,7 +429,7 @@ def get_requests(service, data=None, filepath=None, filters=None):
             return None
 
     elif data is not None:
-        data_lines = data.splitlines()
+        data_lines = data if isinstance(data, list) else data.splitlines()
         data_length = len(data_lines)
 
         for line_number, line in enumerate(data_lines, start=1):
